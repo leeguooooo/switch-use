@@ -1,0 +1,106 @@
+name: release-binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runs_on: macos-14
+          # x86_64-apple-darwin (Intel Mac) intentionally omitted: GitHub-hosted
+          # macos-13 Intel runners are unreliable/unavailable here. Intel Mac users
+          # build from source (see README). Re-add if a runner becomes available.
+          - target: x86_64-unknown-linux-gnu
+            runs_on: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runs_on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Configure cross-linker (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          mkdir -p ~/.cargo
+          cat >> ~/.cargo/config.toml <<'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "target/${{ matrix.target }}/release/switch-use" switch-use
+          tar -czf "out/switch-use-${{ matrix.target }}.tar.gz" switch-use
+          # macOS ships shasum; Linux ships sha256sum — use whichever is present.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "out/switch-use-${{ matrix.target }}.tar.gz" \
+              > "out/switch-use-${{ matrix.target }}.tar.gz.sha256"
+          else
+            shasum -a 256 "out/switch-use-${{ matrix.target }}.tar.gz" \
+              > "out/switch-use-${{ matrix.target }}.tar.gz.sha256"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: switch-use-${{ matrix.target }}
+          path: out/*
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: out
+
+      - name: List artifacts
+        run: ls -R out
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/**/switch-use-*.tar.gz
+            out/**/switch-use-*.tar.gz.sha256
