@@ -27,6 +27,8 @@ something without sys-botbase (stock firmware, hekate). Ask the user to wake it 
 
 ## The loop
 
+0. `switch-use status` first. If a game is running, ask before pressing HOME or closing it,
+   unless the user has already authorized that interruption.
 1. `switch-use screen` → prints a JPEG path; **look at it** before acting. 1280×720, ~0.2–0.4 s.
 2. Act with one batched `press` (or `stick` / `touch` / `type`).
 3. `switch-use screen` again to verify it landed. Never assume.
@@ -53,6 +55,12 @@ Buttons: `A B X Y L R ZL ZR PLUS MINUS LSTICK RSTICK HOME CAPTURE DUP DDOWN DLEF
 
 - **Transitions eat input.** HOME fade, app launch, and screen changes drop presses that land
   mid-animation. Put `wait:1000`–`wait:1500` after anything that changes screens, then screenshot.
+- **Wake can leave the virtual controller unresponsive.** If the screen works but buttons
+  do nothing after sleep, run `switch-use raw detachController`, then retry one button
+  and screenshot to verify. The next input reconnects it; do not blindly repeat a batch.
+- **Applet mode can crash homebrew.** DBI crashed when launched from Album on the test
+  console; the cause is unconfirmed. Prefer full application mode for DBI/RetroArch
+  (hold R while launching a game), after permission to close any running game.
 - Default pacing is 100 ms hold + 250 ms gap per click; menus drop faster bursts. Raise `--gap`
   if a scroll falls short.
 - `type` goes through a virtual USB keyboard. In the 拼音 layout letters land in the IME
