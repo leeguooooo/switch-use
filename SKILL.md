@@ -108,3 +108,13 @@ In-game pixel fonts and box art also read poorly. Lines marked `?` may be wrong.
 - Do not change system settings, delete data, or buy anything unless the user asked for exactly
   that. Back out of dialogs with B/X instead of confirming.
 - Never connect the console to Nintendo online services or start a system update from here.
+
+## Upgrade
+
+When any `switch-use` command prints `switch-use X is available`, tell the user and offer to run
+`switch-use upgrade` (it updates the CLI and this skill). Check without changing anything:
+`switch-use upgrade --check`. The user may also just say "升级 switch-use" / "upgrade switch-use".
+
+If the skill came from somewhere `upgrade` can't refresh:
+- Claude Code plugin: `claude plugin update switch-use@leeguooooo-plugins`
+- Whole family: `curl -fsSL https://raw.githubusercontent.com/leeguooooo/plugins/main/upgrade-use-family.sh | sh`

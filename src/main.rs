@@ -6,6 +6,7 @@
 //! one after another, so we pace them client-side instead of firing a burst.
 
 mod ocr;
+mod upgrade;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -30,7 +31,7 @@ struct Cli {
     /// After an action, wait for the screen to settle and print its text (like `elements`)
     #[arg(long, global = true)]
     observe: bool,
-    /// JSON output for `status`, `elements`, `wait` and --observe
+    /// JSON output for `status`, `elements`, `wait`, `upgrade` and --observe
     #[arg(long, global = true)]
     json: bool,
     #[command(subcommand)]
@@ -133,6 +134,12 @@ enum Cmd {
     Home,
     /// Turn the display backlight off (saves battery while automating) or on
     Display { state: String },
+    /// Update switch-use to the latest release, and its skill
+    Upgrade {
+        /// Only report whether a newer release exists
+        #[arg(long)]
+        check: bool,
+    },
     /// Send a raw sys-botbase command; prints the reply when --reply is given
     Raw {
         #[arg(required = true, num_args = 1..)]
@@ -659,6 +666,7 @@ fn run_cmd(cli: Cli) -> Result<()> {
             }
             bot.sync()?;
         }
+        Cmd::Upgrade { .. } => unreachable!("handled in main"),
         Cmd::Raw { command, reply } => {
             let mut bot = connect(cli.host)?;
             let line = command.join(" ");
@@ -681,7 +689,12 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 }
 
 fn main() {
-    if let Err(e) = run(Cli::parse()) {
+    let cli = Cli::parse();
+    if let Cmd::Upgrade { check } = cli.cmd {
+        std::process::exit(upgrade::run(check, cli.json));
+    }
+    upgrade::notice();
+    if let Err(e) = run(cli) {
         eprintln!("switch-use: {e:#}");
         std::process::exit(1);
     }

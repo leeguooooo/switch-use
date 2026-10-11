@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/leeguooooo/switch-use/main/install.sh | sh
 #
 # Env overrides:
-#   SWITCH_USE_VERSION=v0.1.0   install a specific tag (default: latest release)
+#   SWITCH_USE_VERSION=v0.2.1   install a specific tag (default: latest release)
 #   SWITCH_USE_INSTALL_DIR=...  install dir (default: ~/.local/bin)
 set -eu
 
