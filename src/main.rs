@@ -396,13 +396,26 @@ fn save_shot(jpg: &[u8], out: Option<PathBuf>) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Screens with a known way out, recognised by their text.
+fn hint(items: &[ocr::Text]) -> Option<&'static str> {
+    let all: String = items.iter().map(|t| t.text.as_str()).collect();
+    // The controller-pairing applet shows up after wake or when the virtual controller dropped.
+    if all.contains("手柄上按下") || all.contains("手把上按下") || all.contains("Press L + R") {
+        return Some("controller pairing screen: `switch-use hold L R`, then `switch-use press A`");
+    }
+    None
+}
+
 fn print_elements(path: &std::path::Path, items: &[ocr::Text], json: bool) {
     if json {
         let list: Vec<_> = items.iter().enumerate().map(|(i, t)| t.json(i)).collect();
-        println!("{}", serde_json::json!({ "screenshot": path, "elements": list }));
+        println!("{}", serde_json::json!({ "screenshot": path, "elements": list, "hint": hint(items) }));
         return;
     }
     println!("screenshot {}", path.display());
+    if let Some(h) = hint(items) {
+        println!("hint: {h}");
+    }
     if items.is_empty() {
         println!("(no text on screen; look at the screenshot)");
     }
@@ -413,11 +426,23 @@ fn print_elements(path: &std::path::Path, items: &[ocr::Text], json: bool) {
     }
 }
 
+/// OCR `jpg` while the next screenshot downloads, so a polling loop costs one
+/// round trip per read instead of two.
+fn read_and_grab(bot: &mut Bot, jpg: &[u8]) -> Result<(Vec<ocr::Text>, Vec<u8>)> {
+    std::thread::scope(|s| {
+        let next = s.spawn(|| grab(bot));
+        let items = ocr::read(jpg);
+        let next = next.join().map_err(|_| anyhow!("screenshot thread panicked"))?;
+        Ok((items?, next?))
+    })
+}
+
 /// Poll the screen until `text` is present (or absent). Returns the match.
 fn wait_text(bot: &mut Bot, text: &str, absent: bool, timeout: u64) -> Result<Option<ocr::Text>> {
     let t = Instant::now();
+    let mut jpg = grab(bot)?;
     loop {
-        let items = ocr::read(&grab(bot)?)?;
+        let (items, next) = read_and_grab(bot, &jpg)?;
         let hit = ocr::find(&items, text).first().map(|(_, t)| (*t).clone());
         if hit.is_some() != absent {
             return Ok(hit);
@@ -430,29 +455,32 @@ fn wait_text(bot: &mut Bot, text: &str, absent: bool, timeout: u64) -> Result<Op
                 if seen.is_empty() { "(no text)".into() } else { seen.join(" | ") }
             );
         }
-        sleep(Duration::from_millis(200));
+        jpg = next;
     }
 }
 
-/// Wait until two reads in a row show the same text (max ~3 s), then print it.
+/// The text that decides whether the screen has settled. Low-confidence reads
+/// (box art, pixel fonts) change between identical frames, so they don't count.
+fn settled_text(items: &[ocr::Text]) -> Vec<&str> {
+    items.iter().filter(|t| t.conf >= 0.5).map(|t| t.text.as_str()).collect()
+}
+
+/// Wait until two reads in a row show the same text (max ~3 s), then print the last.
 fn observe(bot: &mut Bot, json: bool) -> Result<()> {
     let t = Instant::now();
-    sleep(Duration::from_millis(300));
+    sleep(Duration::from_millis(150));
     let mut jpg = grab(bot)?;
-    let mut items = ocr::read(&jpg)?;
-    while t.elapsed() < Duration::from_secs(3) {
-        sleep(Duration::from_millis(250));
-        let next_jpg = grab(bot)?;
-        let next = ocr::read(&next_jpg)?;
-        let same = next.len() == items.len() && next.iter().zip(&items).all(|(a, b)| a.text == b.text);
-        jpg = next_jpg;
-        items = next;
-        if same {
-            break;
+    let mut prev: Option<Vec<ocr::Text>> = None;
+    loop {
+        let (items, next) = read_and_grab(bot, &jpg)?;
+        let same = prev.as_deref().is_some_and(|p| settled_text(p) == settled_text(&items));
+        if same || t.elapsed() >= Duration::from_secs(3) {
+            print_elements(&save_shot(&jpg, None)?, &items, json);
+            return Ok(());
         }
+        prev = Some(items);
+        jpg = next;
     }
-    print_elements(&save_shot(&jpg, None)?, &items, json);
-    Ok(())
 }
 
 fn not_found(items: &[ocr::Text], label: &str) -> anyhow::Error {

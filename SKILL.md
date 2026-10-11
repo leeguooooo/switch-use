@@ -33,10 +33,10 @@ touch. Read text first; open the screenshot only when text is not enough.
 
 0. `switch-use status` first. If a game is running, ask before pressing HOME or closing it,
    unless the user has already authorized that interruption.
-1. `switch-use elements` → `[i] text (x,y)` lines plus the screenshot path, ~0.5 s.
+1. `switch-use elements` → `[i] text (x,y)` lines plus the screenshot path, ~1 s on a busy screen.
    A trailing `?` marks a low-confidence read (pixel fonts, box art): treat it as a hint.
 2. Act in one batch: `press … see:<text>` / `tap <label>` / `stick` / `type`, and add
-   `--observe` so the reply is the settled screen's text — no separate read needed.
+   `--observe` so the reply is the settled screen's text (~2 s) — no separate read needed.
 3. Check that reply against what you expected. Never assume a press landed.
 
 ```sh
@@ -83,9 +83,11 @@ In-game pixel fonts and box art also read poorly. Lines marked `?` may be wrong.
 - **Transitions eat input.** HOME fade, app launch, and screen changes drop presses that land
   mid-animation. After anything that changes screens, wait for the next screen's text with
   `see:<text>`; use `wait:1000`–`wait:1500` only where no stable text shows (game transitions).
-- **Wake can leave the virtual controller unresponsive.** If the screen works but buttons
-  do nothing after sleep, run `switch-use raw detachController`, then retry one button
-  with `--observe` to verify. The next input reconnects it; do not blindly repeat a batch.
+- **Wake can drop the virtual controller.** A game may come back on the controller-pairing
+  screen (请在需要使用的手柄上按下 L + R; `elements` prints a `hint:` line for it):
+  `switch-use --observe hold L R`, then `switch-use --observe press A`. If buttons do nothing and no
+  pairing screen shows, run `switch-use raw detachController`, then retry one button with
+  `--observe`. Do not blindly repeat a batch.
 - **Applet mode can crash homebrew.** DBI crashed when launched from Album on the test
   console; the cause is unconfirmed. Prefer full application mode for DBI/RetroArch
   (hold R while launching a game), after permission to close any running game.
