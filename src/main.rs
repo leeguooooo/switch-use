@@ -5,6 +5,8 @@
 //! `\n`-terminated line. Input commands are executed on the console's main loop,
 //! one after another, so we pace them client-side instead of firing a burst.
 
+mod ocr;
+
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::io::{BufRead, BufReader, Write};
@@ -25,6 +27,12 @@ struct Cli {
     /// Switch IP or host (default: $SWITCH_USE_HOST, then the saved config, then auto-discover)
     #[arg(long, global = true, env = "SWITCH_USE_HOST")]
     host: Option<String>,
+    /// After an action, wait for the screen to settle and print its text (like `elements`)
+    #[arg(long, global = true)]
+    observe: bool,
+    /// JSON output for `status`, `elements`, `wait` and --observe
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -38,17 +46,42 @@ enum Cmd {
         subnet: Option<String>,
     },
     /// Connection, sys-botbase version, battery and the running title
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
+    Status,
     /// Save a 1280x720 JPEG of the current screen and print its path
     Screen {
         /// Output file (default: switch-screen-<unix time>.jpg in the temp dir)
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// Click buttons in order. Tokens: A, B, DDOWN*3 (repeat), wait:500 (ms)
+    /// Read the text on screen (macOS Vision OCR): index, text, center point to touch
+    Elements {
+        /// OCR an existing screenshot instead of the console
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// Where to keep the screenshot (default: temp dir)
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// Touch the on-screen text matching a label (handheld only)
+    Tap {
+        label: String,
+        /// Which match when several are on screen, 0-based in reading order
+        #[arg(long)]
+        nth: Option<usize>,
+        /// Hold instead of tap, ms
+        #[arg(long)]
+        hold: Option<u64>,
+    },
+    /// Wait until text appears on screen (or is gone with --absent)
+    Wait {
+        text: String,
+        #[arg(long)]
+        absent: bool,
+        #[arg(long, default_value_t = 10000)]
+        timeout: u64,
+    },
+    /// Click buttons in order. Tokens: A, B, DDOWN*3 (repeat), wait:500 (ms),
+    /// see:设置 (wait until that text is on screen), gone:加载中 (until it is not)
     Press {
         #[arg(required = true)]
         keys: Vec<String>,
@@ -342,12 +375,109 @@ fn type_text(bot: &mut Bot, text: &str, enter: bool) -> Result<()> {
     Ok(())
 }
 
+fn timestamp() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+}
+
+fn grab(bot: &mut Bot) -> Result<Vec<u8>> {
+    decode_hex(&bot.query("pixelPeek")?).context("pixelPeek returned no image")
+}
+
+fn save_shot(jpg: &[u8], out: Option<PathBuf>) -> Result<PathBuf> {
+    let path = out.unwrap_or_else(|| std::env::temp_dir().join(format!("switch-screen-{}.jpg", timestamp())));
+    std::fs::write(&path, jpg).with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
+}
+
+fn print_elements(path: &std::path::Path, items: &[ocr::Text], json: bool) {
+    if json {
+        let list: Vec<_> = items.iter().enumerate().map(|(i, t)| t.json(i)).collect();
+        println!("{}", serde_json::json!({ "screenshot": path, "elements": list }));
+        return;
+    }
+    println!("screenshot {}", path.display());
+    if items.is_empty() {
+        println!("(no text on screen; look at the screenshot)");
+    }
+    for (i, t) in items.iter().enumerate() {
+        let (x, y) = t.center();
+        let low = if t.conf < 0.5 { "  ?" } else { "" };
+        println!("[{i}] {}  ({x},{y}){low}", t.text);
+    }
+}
+
+/// Poll the screen until `text` is present (or absent). Returns the match.
+fn wait_text(bot: &mut Bot, text: &str, absent: bool, timeout: u64) -> Result<Option<ocr::Text>> {
+    let t = Instant::now();
+    loop {
+        let items = ocr::read(&grab(bot)?)?;
+        let hit = ocr::find(&items, text).first().map(|(_, t)| (*t).clone());
+        if hit.is_some() != absent {
+            return Ok(hit);
+        }
+        if t.elapsed() >= Duration::from_millis(timeout) {
+            let seen: Vec<_> = items.iter().map(|t| t.text.as_str()).collect();
+            bail!(
+                "`{text}` still {} after {timeout} ms; on screen: {}",
+                if absent { "on screen" } else { "not on screen" },
+                if seen.is_empty() { "(no text)".into() } else { seen.join(" | ") }
+            );
+        }
+        sleep(Duration::from_millis(200));
+    }
+}
+
+/// Wait until two reads in a row show the same text (max ~3 s), then print it.
+fn observe(bot: &mut Bot, json: bool) -> Result<()> {
+    let t = Instant::now();
+    sleep(Duration::from_millis(300));
+    let mut jpg = grab(bot)?;
+    let mut items = ocr::read(&jpg)?;
+    while t.elapsed() < Duration::from_secs(3) {
+        sleep(Duration::from_millis(250));
+        let next_jpg = grab(bot)?;
+        let next = ocr::read(&next_jpg)?;
+        let same = next.len() == items.len() && next.iter().zip(&items).all(|(a, b)| a.text == b.text);
+        jpg = next_jpg;
+        items = next;
+        if same {
+            break;
+        }
+    }
+    print_elements(&save_shot(&jpg, None)?, &items, json);
+    Ok(())
+}
+
+fn not_found(items: &[ocr::Text], label: &str) -> anyhow::Error {
+    let near: Vec<_> = ocr::near(items, label).iter().map(|t| format!("`{}`", t.text)).collect();
+    if near.is_empty() {
+        anyhow!("`{label}` is not on screen (run `switch-use elements`)")
+    } else {
+        anyhow!("`{label}` is not on screen; did you mean {}?", near.join(", "))
+    }
+}
+
 fn run(cli: Cli) -> Result<()> {
+    let acted = matches!(
+        cli.cmd,
+        Cmd::Press { .. } | Cmd::Hold { .. } | Cmd::Stick { .. } | Cmd::Touch { .. } | Cmd::Swipe { .. }
+            | Cmd::Type { .. } | Cmd::Home | Cmd::Tap { .. }
+    );
+    let (observe_after, json, host) = (cli.observe, cli.json, cli.host.clone());
+    run_cmd(cli)?;
+    if observe_after && acted {
+        observe(&mut connect(host)?, json)?;
+    }
+    Ok(())
+}
+
+fn run_cmd(cli: Cli) -> Result<()> {
+    let json = cli.json;
     match cli.cmd {
         Cmd::Discover { subnet } => {
             println!("{}", discover(subnet)?);
         }
-        Cmd::Status { json } => {
+        Cmd::Status => {
             let host = host_or_discover(cli.host.clone())?;
             let mut bot = connect(Some(host.clone()))?;
             let version = bot.query("getVersion")?;
@@ -378,21 +508,78 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Screen { out } => {
             let mut bot = connect(cli.host)?;
             let t = Instant::now();
-            let hex = bot.query("pixelPeek")?;
-            let jpg = decode_hex(&hex).context("pixelPeek returned no image")?;
-            let path = out.unwrap_or_else(|| {
-                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-                std::env::temp_dir().join(format!("switch-screen-{ts}.jpg"))
-            });
-            std::fs::write(&path, &jpg).with_context(|| format!("write {}", path.display()))?;
+            let jpg = grab(&mut bot)?;
+            let path = save_shot(&jpg, out)?;
             eprintln!("{} bytes in {:.2}s", jpg.len(), t.elapsed().as_secs_f64());
             println!("{}", path.display());
+        }
+        Cmd::Elements { from, out } => {
+            let t = Instant::now();
+            let (path, jpg) = match from {
+                Some(p) => {
+                    let jpg = std::fs::read(&p).with_context(|| format!("read {}", p.display()))?;
+                    (p, jpg)
+                }
+                None => {
+                    let jpg = grab(&mut connect(cli.host)?)?;
+                    (save_shot(&jpg, out)?, jpg)
+                }
+            };
+            let items = ocr::read(&jpg)?;
+            eprintln!("{} texts in {:.2}s", items.len(), t.elapsed().as_secs_f64());
+            print_elements(&path, &items, json);
+        }
+        Cmd::Tap { label, nth, hold } => {
+            let mut bot = connect(cli.host)?;
+            let items = ocr::read(&grab(&mut bot)?)?;
+            let hits = ocr::find(&items, &label);
+            let (i, t) = match (hits.as_slice(), nth) {
+                ([], _) => return Err(not_found(&items, &label)),
+                ([one], None) => *one,
+                (many, Some(n)) => *many.get(n).ok_or_else(|| anyhow!("--nth {n}: only {} matches", many.len()))?,
+                (many, None) => {
+                    let list: Vec<_> = many
+                        .iter()
+                        .enumerate()
+                        .map(|(n, (_, t))| format!("--nth {n}: `{}` {:?}", t.text, t.center()))
+                        .collect();
+                    bail!("`{label}` matches {} texts; pick one:\n  {}", many.len(), list.join("\n  "));
+                }
+            };
+            let (x, y) = t.center();
+            match hold {
+                Some(ms) => bot.send(&format!("touchHold {x} {y} {}", ms.max(15)))?,
+                None => bot.send(&format!("touch {x} {y}"))?,
+            }
+            bot.sync()?;
+            sleep(Duration::from_millis(hold.unwrap_or(0) + 150));
+            eprintln!("touched [{i}] `{}` at ({x},{y})", t.text);
+        }
+        Cmd::Wait { text, absent, timeout } => {
+            let mut bot = connect(cli.host)?;
+            let t = Instant::now();
+            let hit = wait_text(&mut bot, &text, absent, timeout)?;
+            let ms = t.elapsed().as_millis();
+            match (hit, json) {
+                (Some(h), true) => println!("{}", serde_json::json!({ "found": h.json(0), "ms": ms })),
+                (Some(h), false) => println!("found `{}` at {:?} after {ms} ms", h.text, h.center()),
+                (None, true) => println!("{}", serde_json::json!({ "gone": text, "ms": ms })),
+                (None, false) => println!("`{text}` gone after {ms} ms"),
+            }
         }
         Cmd::Press { keys, hold, gap } => {
             let mut bot = connect(cli.host)?;
             for tok in &keys {
                 if let Some(ms) = tok.strip_prefix("wait:") {
                     sleep(Duration::from_millis(ms.parse().context("wait:<ms>")?));
+                    continue;
+                }
+                if let Some(text) = tok.strip_prefix("see:") {
+                    wait_text(&mut bot, text, false, 10000)?;
+                    continue;
+                }
+                if let Some(text) = tok.strip_prefix("gone:") {
+                    wait_text(&mut bot, text, true, 10000)?;
                     continue;
                 }
                 let (name, times) = match tok.split_once('*') {

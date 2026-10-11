@@ -1,15 +1,20 @@
 [package]
 name = "switch-use"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Drive a homebrew Nintendo Switch from the command line or an agent: buttons, sticks, touch, typing and screenshots over sys-botbase."
+description = "Drive a homebrew Nintendo Switch from the command line or an agent: buttons, sticks, touch, typing, screenshots and on-screen text (OCR) over sys-botbase."
 repository = "https://github.com/leeguooooo/switch-use"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSDictionary", "NSString", "NSError", "NSObject"] }
+objc2-vision = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "VNRequestHandler", "VNRequest", "VNRecognizeTextRequest", "VNObservation", "VNTypes", "VNDefines"] }
 
 [profile.release]
 strip = true

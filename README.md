@@ -1,9 +1,9 @@
 # switch-use
 
 Drive a Nintendo Switch running Atmosphère from the command line or an AI agent: buttons, sticks,
-touch, typing and screenshots, over the LAN.
+touch, typing, screenshots and on-screen text (OCR), over the LAN.
 
-A single ~0.8 MB Rust binary that speaks [sys-botbase](https://github.com/olliz0r/sys-botbase)'s
+A single ~0.9 MB Rust binary that speaks [sys-botbase](https://github.com/olliz0r/sys-botbase)'s
 TCP protocol. Part of the `*-use` family (iphone-use, chrome-use, mail-use, …).
 
 ## Install
@@ -25,6 +25,9 @@ On the Switch (Atmosphère, booted into emuMMC):
 ```sh
 switch-use discover                 # find the Switch on the LAN, remember it
 switch-use status                   # sys-botbase version, battery, running game
+switch-use elements                 # text on screen (macOS Vision OCR) with touch points
+switch-use tap 设置                  # touch a label (handheld)
+switch-use --observe press A see:继续   # act, wait for text, print the settled screen
 switch-use screen -o now.jpg        # 1280x720 JPEG in ~0.3 s
 switch-use press DDOWN*3 A wait:1500
 switch-use stick L up --ms 400
