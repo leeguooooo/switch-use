@@ -1,15 +1,20 @@
 [package]
 name = "switch-use"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Drive a homebrew Nintendo Switch from the command line or an agent: buttons, sticks, touch, typing, screenshots and on-screen text (OCR) over sys-botbase."
+description = "Let AI agents drive a real Nintendo Switch (Atmosphère + sys-botbase): on-screen text via OCR, tap by label, wait for screens, buttons, sticks, touch, typing and screenshots over the LAN."
 repository = "https://github.com/leeguooooo/switch-use"
+homepage = "https://github.com/leeguooooo/switch-use"
+readme = "README.md"
+keywords = ["nintendo-switch", "sys-botbase", "automation", "ai-agent", "ocr"]
+categories = ["command-line-utilities", "games"]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 serde_json = "1"
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

@@ -5,6 +5,7 @@
 //! `\n`-terminated line. Input commands are executed on the console's main loop,
 //! one after another, so we pace them client-side instead of firing a burst.
 
+mod frame;
 mod ocr;
 mod upgrade;
 
@@ -63,7 +64,7 @@ enum Cmd {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
-    /// Touch the on-screen text matching a label (handheld only)
+    /// Touch the on-screen text matching a label
     Tap {
         label: String,
         /// Which match when several are on screen, 0-based in reading order
@@ -110,7 +111,7 @@ enum Cmd {
         #[arg(long, default_value_t = 200)]
         ms: u64,
     },
-    /// Tap the touchscreen (handheld only), 0..1280 x 0..720
+    /// Tap the touchscreen, 0..1280 x 0..720
     Touch {
         x: u32,
         y: u32,
@@ -406,13 +407,19 @@ fn hint(items: &[ocr::Text]) -> Option<&'static str> {
     None
 }
 
-fn print_elements(path: &std::path::Path, items: &[ocr::Text], json: bool) {
+fn print_elements(path: &std::path::Path, items: &[ocr::Text], json: bool, settled: bool) {
     if json {
         let list: Vec<_> = items.iter().enumerate().map(|(i, t)| t.json(i)).collect();
-        println!("{}", serde_json::json!({ "screenshot": path, "elements": list, "hint": hint(items) }));
+        println!(
+            "{}",
+            serde_json::json!({ "screenshot": path, "elements": list, "hint": hint(items), "settled": settled })
+        );
         return;
     }
     println!("screenshot {}", path.display());
+    if !settled {
+        println!("note: the screen was still changing (loading or animation); read again or look at the screenshot");
+    }
     if let Some(h) = hint(items) {
         println!("hint: {h}");
     }
@@ -465,22 +472,74 @@ fn settled_text(items: &[ocr::Text]) -> Vec<&str> {
     items.iter().filter(|t| t.conf >= 0.5).map(|t| t.text.as_str()).collect()
 }
 
-/// Wait until two reads in a row show the same text (max ~3 s), then print the last.
+/// Wait until two reads in a row show the same text on a still screen (max ~4 s),
+/// then print the last. Pixels matter too: a loading spinner carries no text.
 fn observe(bot: &mut Bot, json: bool) -> Result<()> {
     let t = Instant::now();
     sleep(Duration::from_millis(150));
     let mut jpg = grab(bot)?;
-    let mut prev: Option<Vec<ocr::Text>> = None;
+    let mut prev: Option<(Vec<ocr::Text>, Vec<u8>)> = None;
     loop {
         let (items, next) = read_and_grab(bot, &jpg)?;
-        let same = prev.as_deref().is_some_and(|p| settled_text(p) == settled_text(&items));
-        if same || t.elapsed() >= Duration::from_secs(3) {
-            print_elements(&save_shot(&jpg, None)?, &items, json);
+        let thumb = frame::thumb(&jpg)?;
+        let same = prev
+            .as_ref()
+            .is_some_and(|(p, pt)| settled_text(p) == settled_text(&items) && frame::still(pt, &thumb));
+        if same || t.elapsed() >= Duration::from_secs(4) {
+            print_elements(&save_shot(&jpg, None)?, &items, json, same);
             return Ok(());
         }
-        prev = Some(items);
+        prev = Some((items, thumb));
         jpg = next;
     }
+}
+
+/// After a touch, check the screen reacted. Docked there is no touchscreen and
+/// sys-botbase cannot tell, so a touch that changes nothing is reported.
+fn check_touch(bot: &mut Bot, before: &[u8]) -> Result<()> {
+    let before = frame::thumb(before)?;
+    sleep(Duration::from_millis(250));
+    let after = frame::thumb(&grab(bot)?)?;
+    if frame::still(&before, &after) {
+        bail!(
+            "the touch changed nothing on screen (nothing there reacts to touch); look at the screenshot, \
+             or navigate with the D-pad and A"
+        );
+    }
+    Ok(())
+}
+
+/// The HOME menu shows the clock in the top-right corner; games and applets do not.
+fn at_home(items: &[ocr::Text]) -> bool {
+    items.iter().any(|t| {
+        let s = t.text.trim();
+        t.x > 850 && t.y < 110 && s.len() <= 5 && s.contains(':') && s.chars().all(|c| c.is_ascii_digit() || c == ':')
+    })
+}
+
+/// HOME is a toggle: pressed on the HOME menu it resumes the running game. Press,
+/// then confirm with OCR, and press once more if it toggled the wrong way.
+fn go_home(bot: &mut Bot) -> Result<()> {
+    // Already there: pressing would resume the game, if only for a moment.
+    if at_home(&ocr::read(&grab(bot)?)?) {
+        return Ok(());
+    }
+    for attempt in 0..2 {
+        bot.click("HOME", 100, 0)?;
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_millis(2500) {
+            sleep(Duration::from_millis(300));
+            if at_home(&ocr::read(&grab(bot)?)?) {
+                // The fade-in drops input for a moment longer.
+                sleep(Duration::from_millis(400));
+                return Ok(());
+            }
+        }
+        if attempt == 0 {
+            eprintln!("not on the HOME menu after pressing HOME (it toggles back to a running game); pressing again");
+        }
+    }
+    bail!("could not reach the HOME menu; look at `switch-use screen`")
 }
 
 fn not_found(items: &[ocr::Text], label: &str) -> anyhow::Error {
@@ -562,11 +621,12 @@ fn run_cmd(cli: Cli) -> Result<()> {
             };
             let items = ocr::read(&jpg)?;
             eprintln!("{} texts in {:.2}s", items.len(), t.elapsed().as_secs_f64());
-            print_elements(&path, &items, json);
+            print_elements(&path, &items, json, true);
         }
         Cmd::Tap { label, nth, hold } => {
             let mut bot = connect(cli.host)?;
-            let items = ocr::read(&grab(&mut bot)?)?;
+            let before = grab(&mut bot)?;
+            let items = ocr::read(&before)?;
             let hits = ocr::find(&items, &label);
             let (i, t) = match (hits.as_slice(), nth) {
                 ([], _) => return Err(not_found(&items, &label)),
@@ -589,6 +649,7 @@ fn run_cmd(cli: Cli) -> Result<()> {
             bot.sync()?;
             sleep(Duration::from_millis(hold.unwrap_or(0) + 150));
             eprintln!("touched [{i}] `{}` at ({x},{y})", t.text);
+            check_touch(&mut bot, &before)?;
         }
         Cmd::Wait { text, absent, timeout } => {
             let mut bot = connect(cli.host)?;
@@ -659,12 +720,14 @@ fn run_cmd(cli: Cli) -> Result<()> {
                 bail!("touch is 0..1280 x 0..720");
             }
             let mut bot = connect(cli.host)?;
+            let before = grab(&mut bot)?;
             match hold {
                 Some(ms) => bot.send(&format!("touchHold {x} {y} {}", ms.max(15)))?,
                 None => bot.send(&format!("touch {x} {y}"))?,
             }
             bot.sync()?;
             sleep(Duration::from_millis(hold.unwrap_or(0) + 150));
+            check_touch(&mut bot, &before)?;
         }
         Cmd::Swipe { points } => {
             if points.len() % 2 != 0 {
@@ -682,8 +745,12 @@ fn run_cmd(cli: Cli) -> Result<()> {
         }
         Cmd::Home => {
             let mut bot = connect(cli.host)?;
-            // The HOME menu fades in for about a second and drops input meanwhile.
-            bot.click("HOME", 100, 1200)?;
+            if cfg!(target_os = "macos") {
+                go_home(&mut bot)?;
+            } else {
+                // No OCR to confirm with. The fade-in drops input for about a second.
+                bot.click("HOME", 100, 1200)?;
+            }
         }
         Cmd::Display { state } => {
             let mut bot = connect(cli.host)?;

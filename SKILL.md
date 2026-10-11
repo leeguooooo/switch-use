@@ -1,6 +1,6 @@
 ---
 name: switch-use
-description: Drive a real Nintendo Switch running Atmosphère + sys-botbase from the shell — read the text on screen (OCR), tap a label, wait for text to appear, press buttons and sticks, type into the system keyboard, take screenshots, check battery and the running game. Use when a task needs the user's Switch (navigate menus, launch or play a game, change a setting, capture the screen, automate a repetitive in-game action), or the user mentions Switch, 任天堂, NS, 柚子, sys-botbase, 大气层 automation.
+description: Drive a real Nintendo Switch running Atmosphère + sys-botbase from the shell — read the text on screen (OCR), tap a label, wait for text to appear, press buttons and sticks, type into the system keyboard, take screenshots, check battery and the running game. Use when a task needs the user's Switch (navigate menus, launch or play a game, change a setting, capture the screen, automate a repetitive in-game action), or the user mentions Switch, Nintendo Switch, 任天堂, NS, 柚子, 大气层, Atmosphère, emuMMC, sys-botbase, a Switch game (动森, 塞尔达, 马里奥, 宝可梦 …) or Switch automation / 自动化 / 挂机.
 allowed-tools: Bash(switch-use:*)
 ---
 
@@ -36,7 +36,9 @@ touch. Read text first; open the screenshot only when text is not enough.
 1. `switch-use elements` → `[i] text (x,y)` lines plus the screenshot path, ~1 s on a busy screen.
    A trailing `?` marks a low-confidence read (pixel fonts, box art): treat it as a hint.
 2. Act in one batch: `press … see:<text>` / `tap <label>` / `stick` / `type`, and add
-   `--observe` so the reply is the settled screen's text (~2 s) — no separate read needed.
+   `--observe` so the reply is the settled screen's text (~2 s) — no separate read needed. It
+   waits for the text *and* the pixels to stop changing; if they never do (animation, a long
+   load) it returns after ~4 s with `note: the screen was still changing` (`"settled": false`).
 3. Check that reply against what you expected. Never assume a press landed.
 
 ```sh
@@ -44,7 +46,7 @@ switch-use status                     # host, sys-botbase version, battery %, ru
 switch-use elements [--json]          # text on screen + center points + screenshot path
 switch-use elements --from shot.jpg   # OCR a saved screenshot
 switch-use --observe press A          # any action + the settled screen's text afterwards
-switch-use tap 设置 [--nth 1]          # touch the text matching a label (handheld only)
+switch-use tap 设置 [--nth 1]          # touch the text matching a label
 switch-use wait 继续 [--absent] [--timeout 10000]   # until text appears / disappears
 switch-use screen [-o shot.jpg]       # screenshot only, prints the path
 switch-use press A                    # click
@@ -52,10 +54,10 @@ switch-use press DDOWN*5 A see:系统设置 B   # *N repeats; see:<text> waits u
 switch-use press A gone:加载中 wait:500 # gone:<text> waits until it is gone; wait:<ms> sleeps
 switch-use hold ZL ZR --ms 800        # hold buttons together
 switch-use stick L up --ms 400        # or: stick R 0.5 -1 --ms 300  (x y in -1..1)
-switch-use touch 640 360 [--hold 500] # handheld only, 0..1280 x 0..720
+switch-use touch 640 360 [--hold 500] # 0..1280 x 0..720
 switch-use swipe 200 600 1000 600     # finger path x1 y1 x2 y2 ...
 switch-use type "Hi Leo-2026!" [--enter]  # ASCII into the system keyboard
-switch-use home                       # HOME menu (waits out the fade-in)
+switch-use home                       # HOME menu; safe to repeat (see below)
 switch-use display off|on             # backlight, saves battery during long runs
 switch-use raw <sys-botbase command> [--reply]
 ```
@@ -98,7 +100,15 @@ In-game pixel fonts and box art also read poorly. Lines marked `?` may be wrong.
   Non-ASCII (Chinese) cannot be typed — use touch on the on-screen keyboard instead.
 - In the system keyboard, **X = 退出 (discard)**, B = backspace, PLUS = 确定 (commit). Press X to
   back out of a text field without saving.
-- `touch` and `tap` only work in handheld mode; docked there is no touchscreen.
+- `touch` / `tap` check the screen afterwards and exit 1 when nothing changed. On the HOME
+  menu the first touch only **selects** a tile or icon; touch it again to open it.
+- **HOME is a toggle.** Pressed on the HOME menu it resumes the running game. `switch-use home`
+  checks first and does nothing when already there; a raw `press HOME` does not.
+- **Confirm the cursor before A on HOME.** Presses right after a screen change get dropped, so
+  `DRIGHT*12 A` can land on the wrong tile — and A on another game while one is running opens
+  "将关闭正在运行的软件" with 关闭 focused. Read the focused label (shown above the selected tile)
+  first; if that dialog appears, press B.
+- Busy screens (software grids, box art) take ~1.5 s to download: screenshots travel as hex.
 - OCR (`elements`, `tap`, `wait`, `see:`, `--observe`) needs macOS (Vision). On Linux use
   `screen` and look at the image.
 - Battery is shown by `status`. Below ~10 % warn the user before a long run.
