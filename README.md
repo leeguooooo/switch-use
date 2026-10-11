@@ -12,6 +12,8 @@ Code, Codex or any agent that can run a shell command. Computer-use, but for the
 - Screen text via macOS Vision OCR (Chinese, Japanese, English) with the point to touch.
 - Ships an agent skill ([SKILL.md](SKILL.md)); part of the [`*-use` family](https://github.com/leeguooooo/plugins)
   (iphone-use, chrome-use, mail-use, …).
+- Write-up with real-console stories: [English](https://blog.leeguoo.com/en/posts/switch-use/) ·
+  [中文](https://blog.leeguoo.com/zh/posts/switch-use/).
 
 ## Install
 
